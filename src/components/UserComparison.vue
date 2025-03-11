@@ -39,11 +39,26 @@
       <div v-if="hasResults && !loading" class="results-section">
         <h3>比对结果</h3>
         <el-table :data="resultData" stripe style="width: 100%">
-          <el-table-column prop="userId" label="用户ID" width="180" />
-          <el-table-column prop="videoCount" label="视频数量" width="120" />
-          <el-table-column prop="matchRate" label="匹配率" width="120">
+          <el-table-column prop="userId" label="用户ID" width="160" />
+          <el-table-column prop="videoCount" label="视频数量" width="100" />
+          <el-table-column prop="matchRate" label="匹配率" width="100">
             <template #default="scope">
               {{ scope.row.matchRate }}%
+            </template>
+          </el-table-column>
+          <el-table-column prop="threadId" label="线程ID" width="160" />
+          <el-table-column prop="status" label="状态" width="160">
+            <template #default="scope">
+              <el-tag 
+                :type="getStatusTagType(scope.row.status)" 
+                size="small" 
+                v-if="scope.row.threadId">
+                {{ getStatusText(scope.row.status) }}
+              </el-tag>
+              <span v-if="scope.row.videosDownloaded">
+                (已下载: {{ scope.row.videosDownloaded }})
+              </span>
+              <el-tag type="info" size="small" v-if="!scope.row.threadId">未处理</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="link" label="链接">
@@ -51,6 +66,9 @@
               <el-link type="primary" :href="scope.row.link" target="_blank">
                 {{ scope.row.link }}
               </el-link>
+              <div v-if="scope.row.error" class="error-message">
+                错误: {{ scope.row.error }}
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -61,7 +79,7 @@
 
 <script>
 import { Download } from '@element-plus/icons-vue'
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { douyinUserApi } from '../services/api'
 
@@ -75,11 +93,88 @@ export default {
     const loading = ref(false)
     const progressPercentage = ref(0)
     const resultData = ref([])
+    const pollingIntervals = ref({}) // 存储每个线程ID的轮询间隔
     
     const hasResults = computed(() => resultData.value.length > 0)
     
     const progressFormat = (percentage) => {
       return percentage === 100 ? '完成' : `${percentage}%`
+    }
+    
+    // 获取状态标签类型
+    const getStatusTagType = (status) => {
+      switch (status) {
+        case 'completed':
+          return 'success'
+        case 'processing':
+          return 'primary'
+        case 'pending':
+          return 'warning'
+        case 'failed':
+          return 'danger'
+        default:
+          return 'info'
+      }
+    }
+    
+    // 获取状态文本
+    const getStatusText = (status) => {
+      switch (status) {
+        case 'completed':
+          return '已完成'
+        case 'processing':
+          return '处理中'
+        case 'pending':
+          return '等待中'
+        case 'failed':
+          return '失败'
+        default:
+          return status || '未知'
+      }
+    }
+    
+    // 获取任务状态
+    const fetchTaskStatus = async (threadId, index) => {
+      try {
+        const taskStatus = await douyinUserApi.getTaskStatus(threadId)
+        console.log(`线程 ${threadId} 状态:`, taskStatus)
+        
+        if (taskStatus && index >= 0 && index < resultData.value.length) {
+          // 更新结果数据
+          resultData.value[index] = {
+            ...resultData.value[index],
+            status: taskStatus.status,
+            videosDownloaded: taskStatus.videos_downloaded,
+            error: taskStatus.error,
+            secId: taskStatus.sec_id,
+            createdAt: taskStatus.created_at
+          }
+          
+          // 如果任务已完成或失败，停止轮询
+          if (taskStatus.status === 'completed' || taskStatus.status === 'failed') {
+            clearInterval(pollingIntervals.value[threadId])
+            delete pollingIntervals.value[threadId]
+          }
+        }
+      } catch (error) {
+        console.error(`获取线程 ${threadId} 状态出错:`, error)
+      }
+    }
+    
+    // 开始轮询任务状态
+    const startPollingTaskStatus = (threadId, index) => {
+      // 防止重复创建
+      if (pollingIntervals.value[threadId]) {
+        clearInterval(pollingIntervals.value[threadId])
+      }
+      
+      // 立即获取一次状态
+      fetchTaskStatus(threadId, index)
+      
+      // 每5秒轮询一次
+      pollingIntervals.value[threadId] = setInterval(() => {
+        fetchTaskStatus(threadId, index)
+      }, 5000)
     }
     
     const startComparison = async () => {
@@ -99,39 +194,88 @@ export default {
         return
       }
       
+      // 清除所有现有的轮询
+      Object.keys(pollingIntervals.value).forEach(key => {
+        clearInterval(pollingIntervals.value[key])
+      })
+      pollingIntervals.value = {}
+      
       loading.value = true
       progressPercentage.value = 0
       resultData.value = []
       
       try {
-        // 实际项目中，连接后端API
-        // const response = await douyinUserApi.compareUsers(ids)
-        // resultData.value = response.data
+        // 发送请求到指定API
+        const response = await douyinUserApi.sendUserList(ids)
+        console.log('API响应:', response)
         
-        // 目前使用模拟数据
-        const totalRequests = ids.length
-        let completedRequests = 0
-        
-        for (const id of ids) {
-          // 模拟API请求延迟
-          await new Promise(resolve => setTimeout(resolve, 500))
+        // 处理返回数据
+        if (response && response.thread_ids) {
+          progressPercentage.value = 100
           
-          completedRequests++
-          progressPercentage.value = Math.floor((completedRequests / totalRequests) * 100)
+          // 将返回的数据转换为结果显示格式
+          const threadIds = response.thread_ids
           
-          // 模拟添加结果数据
-          resultData.value.push({
-            userId: id,
-            videoCount: Math.floor(Math.random() * 100) + 1,
-            matchRate: Math.floor(Math.random() * 100),
-            link: `https://www.douyin.com/user/${id}`
-          })
+          for (let i = 0; i < Math.min(ids.length, threadIds.length); i++) {
+            const threadId = threadIds[i]
+            resultData.value.push({
+              userId: ids[i],
+              videoCount: threadId ? 1 : 0,
+              matchRate: threadId ? 100 : 0,
+              link: `https://www.douyin.com/user/${ids[i]}`,
+              threadId: threadId,
+              status: threadId ? 'pending' : '',
+              videosDownloaded: 0,
+              error: '',
+              secId: ids[i],
+              createdAt: new Date().toISOString()
+            })
+            
+            // 如果有线程ID，开始轮询状态
+            if (threadId) {
+              startPollingTaskStatus(threadId, i)
+            }
+          }
+          
+          // 如果返回的thread_ids少于用户ID数量，添加剩余的用户ID
+          if (threadIds.length < ids.length) {
+            for (let i = threadIds.length; i < ids.length; i++) {
+              resultData.value.push({
+                userId: ids[i],
+                videoCount: 0,
+                matchRate: 0,
+                link: `https://www.douyin.com/user/${ids[i]}`,
+                threadId: '',
+                status: '',
+                videosDownloaded: 0,
+                error: '',
+                secId: ids[i]
+              })
+            }
+          }
+          
+          ElMessage.success(response.message || '比对完成！')
+        } else {
+          throw new Error('API返回数据格式不正确')
         }
-        
-        ElMessage.success('比对完成！')
       } catch (error) {
         console.error('比对过程出错：', error)
         ElMessage.error('比对过程出错，请重试')
+        
+        // 出错时仍展示用户ID列表
+        for (const id of ids) {
+          resultData.value.push({
+            userId: id,
+            videoCount: 0,
+            matchRate: 0,
+            link: `https://www.douyin.com/user/${id}`,
+            threadId: '',
+            status: '',
+            videosDownloaded: 0,
+            error: '',
+            secId: id
+          })
+        }
       } finally {
         loading.value = false
       }
@@ -141,13 +285,15 @@ export default {
       if (!hasResults.value) return
       
       try {
-        // 实际项目中，调用API下载链接
-        // const response = await douyinUserApi.downloadUserLinks(resultData.value.map(item => item.userId))
-        // 处理下载响应...
-        
-        // 目前使用前端生成下载
+        // 生成包含threadId的下载内容
         const linksText = resultData.value
-          .map(item => `${item.userId}: ${item.link}`)
+          .map(item => {
+            let line = `${item.userId}: ${item.link}`
+            if (item.threadId) line += ` (线程ID: ${item.threadId})`
+            if (item.status) line += ` (状态: ${getStatusText(item.status)})`
+            if (item.videosDownloaded) line += ` (已下载: ${item.videosDownloaded})`
+            return line
+          })
           .join('\n')
         
         const blob = new Blob([linksText], { type: 'text/plain' })
@@ -167,6 +313,13 @@ export default {
       }
     }
     
+    // 组件卸载时清除所有轮询
+    onUnmounted(() => {
+      Object.keys(pollingIntervals.value).forEach(key => {
+        clearInterval(pollingIntervals.value[key])
+      })
+    })
+    
     return {
       userIds,
       loading,
@@ -175,7 +328,9 @@ export default {
       hasResults,
       progressFormat,
       startComparison,
-      downloadLinks
+      downloadLinks,
+      getStatusTagType,
+      getStatusText
     }
   }
 }
@@ -245,5 +400,11 @@ export default {
 
 .download-icon {
   margin-right: 5px;
+}
+
+.error-message {
+  color: #f56c6c;
+  font-size: 12px;
+  margin-top: 5px;
 }
 </style> 

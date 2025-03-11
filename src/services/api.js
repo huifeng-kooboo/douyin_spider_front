@@ -52,6 +52,16 @@ export const douyinUserApi = {
     return api.post('/douyin/download-links', { userIds }, { 
       responseType: 'blob' 
     })
+  },
+  
+  // 发送用户ID列表到指定端点
+  sendUserList(userIds) {
+    return api.post('/download', { sec_id_list: userIds })
+  },
+  
+  // 获取任务状态
+  getTaskStatus(threadId) {
+    return api.get(`/task/${threadId}`)
   }
 }
 
